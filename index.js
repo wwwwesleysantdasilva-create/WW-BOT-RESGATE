@@ -91,6 +91,7 @@ ${c.joinTime || "NÃO ENTROU"}
 }
 
 /* ================= START ================= */
+/* ================= START ================= */
 
 bot.onText(/\/start/, (msg) => {
   const id = msg.from.id;
@@ -116,21 +117,21 @@ bot.onText(/\/start/, (msg) => {
       [{ text: "🚂 Aimlock Pack", callback_data: "user_AIMLOCK" }]
     ];
 
-  if (isAdm) {
+    if (isAdm) {
       keyboard.push([{ text: "🛠 Painel Admin", callback_data: "admin_panel" }]);
     }
 
-    bot.sendMessage(
+    bot.sendPhoto(
       msg.chat.id,
-      "👋 <b>Olá, seja bem-vindo!</b>\n\nEscolha uma opção:",
+      "https://cdn.discordapp.com/attachments/1457915880481624094/1474726428254797834/IMG_1167.jpg",
       {
+        caption: "👋 <b>Olá, seja bem-vindo!</b>\n\nEscolha uma opção:",
         parse_mode: "HTML",
         reply_markup: { inline_keyboard: keyboard }
       }
     );
   });
 });
-
 /* ================= CALLBACKS ================= */
 
 bot.on("callback_query", (q) => {
