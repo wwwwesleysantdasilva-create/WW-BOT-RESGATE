@@ -299,7 +299,7 @@ bot.on("message", (msg) => {
 
 /* ===== FIX POLLING ERROR ===== */
 bot.on("polling_error", (err) => {
-  console.error("Polling error:", err.code);
+  console.log(err);
 });
 
 console.log("🤖 BOT ONLINE — LOGS APENAS APÓS RESGATE");
