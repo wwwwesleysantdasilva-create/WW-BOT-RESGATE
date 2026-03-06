@@ -11,7 +11,6 @@ const LOG_GROUP_ID = -1003713776395;
 const PRODUCTS = {
   INJECT: { name: "💉 Inject Pack", group: -1003801083393 },
   PHARM: { name: "🧪 Pharmacy Pack", group: -1003705721917 },
-  
   AIMLOCK: { name: "🚂 Aimlock Pack", group: -1003350845729 }
 };
 
@@ -114,11 +113,10 @@ bot.onText(/\/start/, (msg) => {
     const keyboard = [
       [{ text: "💉 Inject Pack", callback_data: "user_INJECT" }],
       [{ text: "🧪 Pharmacy Pack", callback_data: "user_PHARM" }],
-      [{ text: "📱 Basic Pack", callback_data: "user_BASIC" }],
       [{ text: "🚂 Aimlock Pack", callback_data: "user_AIMLOCK" }]
     ];
 
-    if (isAdm) {
+  if (isAdm) {
       keyboard.push([{ text: "🛠 Painel Admin", callback_data: "admin_panel" }]);
     }
 
