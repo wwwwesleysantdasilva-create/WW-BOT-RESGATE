@@ -122,16 +122,14 @@ bot.onText(/\/start/, (msg) => {
     }
 
     bot.sendPhoto(
-      msg.chat.id,
-      "https://cdn.discordapp.com/attachments/1457915880481624094/1474726428254797834/IMG_1167.jpg",
-      {
-        caption: "👋 <b>Olá, seja bem-vindo!</b>\n\nEscolha uma opção:",
-        parse_mode: "HTML",
-        reply_markup: { inline_keyboard: keyboard }
-      }
-    );
-  });
-});
+  msg.chat.id,
+  "https://cdn.discordapp.com/attachments/1457915880481624094/1474726428254797834/IMG_1167.jpg",
+  {
+    caption: "👋 <b>Olá, seja bem-vindo!</b>\n\nEscolha uma opção:",
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: keyboard }
+  }
+);
 /* ================= CALLBACKS ================= */
 
 bot.on("callback_query", (q) => {
