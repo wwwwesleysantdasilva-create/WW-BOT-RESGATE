@@ -5,6 +5,12 @@ import fs from "fs";
 /* ================= CONFIG ================= */
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
+
+if (!BOT_TOKEN) {
+  console.log("❌ BOT_TOKEN não encontrado nas variáveis do Railway");
+  process.exit(1);
+}
+
 const MASTER_ADMIN = 8235876348;
 const LOG_GROUP_ID = -1003713776395;
 
@@ -15,6 +21,8 @@ const PRODUCTS = {
 };
 
 /* ================= INIT ================= */
+
+console.log("🚀 Iniciando BOT...");
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const db = new sqlite3.Database("./database.sqlite");
@@ -178,16 +186,6 @@ bot.on("callback_query", (q) => {
     });
   }
 
-  if (q.data === "admin_add" && id === MASTER_ADMIN) {
-    state[id] = { step: "add_admin" };
-    return bot.sendMessage(chat, "Envie o ID do novo admin:");
-  }
-
-  if (q.data === "admin_remove" && id === MASTER_ADMIN) {
-    state[id] = { step: "remove_admin" };
-    return bot.sendMessage(chat, "Envie o ID do admin para remover:");
-  }
-
   if (q.data.startsWith("gen_")) {
     state[id] = { step: "gen_qty", product: q.data.replace("gen_", "") };
     return bot.sendMessage(chat, "Quantas keys deseja gerar?");
@@ -220,18 +218,6 @@ bot.on("message", (msg) => {
   const userName = msg.from.first_name || "Usuário";
   logMsg(id, `👤 ${userName}`, text);
 
-  if (state[id]?.step === "add_admin" && id === MASTER_ADMIN) {
-    db.run(`INSERT OR IGNORE INTO admins VALUES (?)`, [Number(text)]);
-    state[id] = null;
-    return bot.sendMessage(msg.chat.id, "✅ Admin adicionado.");
-  }
-
-  if (state[id]?.step === "remove_admin" && id === MASTER_ADMIN) {
-    db.run(`DELETE FROM admins WHERE id=?`, [Number(text)]);
-    state[id] = null;
-    return bot.sendMessage(msg.chat.id, "✅ Admin removido.");
-  }
-
   if (state[id]?.step === "gen_qty") {
     const qty = parseInt(text);
     if (!qty || qty < 1 || qty > 100)
@@ -250,6 +236,7 @@ bot.on("message", (msg) => {
     }
 
     state[id] = null;
+
     return bot.sendMessage(
       msg.chat.id,
       `✅ Keys geradas:\n\n<pre>${keys.join("\n")}</pre>`,
@@ -286,6 +273,7 @@ bot.on("message", (msg) => {
       );
 
       const file = generateTXT(id);
+
       bot.sendDocument(LOG_GROUP_ID, file, {
         caption: `✅ RESGATE CONFIRMADO\n📦 ${product.name}\n👤 ${userName}\n🕒 ${nowBR()}`
       });
@@ -299,7 +287,7 @@ bot.on("message", (msg) => {
 /* ===== FIX POLLING ERROR ===== */
 
 bot.on("polling_error", (err) => {
-  console.log(err);
+  console.log("⚠️ Polling error:", err.message);
 });
 
 console.log("🤖 BOT ONLINE — LOGS APENAS APÓS RESGATE");
