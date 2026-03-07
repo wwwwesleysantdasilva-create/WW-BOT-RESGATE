@@ -122,7 +122,7 @@ bot.onText(/\/start/, (msg) => {
 
     bot.sendPhoto(
       msg.chat.id,
-      "https://i.postimg.cc/W1NDCw6q/IMG-1167.jpg",
+      { url: "https://i.postimg.cc/W1NDCw6q/IMG-1167.jpg" },
       {
         caption: "👋 <b>Olá, seja bem-vindo!</b>\n\nEscolha uma opção:",
         parse_mode: "HTML",
@@ -213,7 +213,7 @@ bot.on("callback_query", (q) => {
 /* ================= MESSAGES ================= */
 
 bot.on("message", (msg) => {
-  if (msg.text?.startsWith("/")) return; // 🔥 CORREÇÃO
+  if (msg.text?.startsWith("/")) return;
 
   const id = msg.from.id;
   const text = msg.text?.trim();
