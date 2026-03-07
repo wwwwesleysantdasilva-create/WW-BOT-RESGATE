@@ -119,19 +119,6 @@ bot.onText(/\/start/, (msg) => {
     if (isAdm) {
       keyboard.push([{ text: "🛠 Painel Admin", callback_data: "admin_panel" }]);
     }
-
-    bot.sendPhoto(
-      msg.chat.id,
-      { url: "https://i.postimg.cc/W1NDCw6q/IMG-1167.jpg" },
-      {
-        caption: "👋 <b>Olá, seja bem-vindo!</b>\n\nEscolha uma opção:",
-        parse_mode: "HTML",
-        reply_markup: {
-          inline_keyboard: keyboard
-        }
-      }
-    );
-  });
 });
 
 /* ================= CALLBACKS ================= */
