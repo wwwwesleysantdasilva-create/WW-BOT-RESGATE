@@ -121,18 +121,19 @@ bot.onText(/\/start/, (msg) => {
       keyboard.push([{ text: "🛠 Painel Admin", callback_data: "admin_panel" }]);
     }
     
-const startPhoto = fs.existsSync("./start_photo.txt")
-  ? fs.readFileSync("./start_photo.txt", "utf8")
-  : null;
-
 const fs = require('fs');
 
-// Lê o conteúdo do arquivo, se existir
-const startPhoto = fs.existsSync("./start_photo.txt")
-  ? fs.readFileSync("./start_photo.txt", "utf8").trim()
-  : null;
+// Lê a URL ou caminho da foto
+let startPhoto = null;
 
-// Se houver uma foto válida, envia; senão, apenas envia a mensagem sem foto
+if (fs.existsSync("./start_photo.txt")) {
+  const content = fs.readFileSync("./start_photo.txt", "utf8").trim();
+  if (content && (content.startsWith("http://") || content.startsWith("https://") || fs.existsSync(content))) {
+    startPhoto = content;
+  }
+}
+
+// Envia a foto apenas se for válida
 if (startPhoto) {
   bot.sendPhoto(msg.chat.id, startPhoto, {
     caption: "🍷 <b>Olá, seja bem-vindo! Aqui vocês irão resgatar seu Pack!</b>\n\nEscolha uma opção:",
@@ -140,13 +141,19 @@ if (startPhoto) {
     reply_markup: {
       inline_keyboard: keyboard
     }
-  }).catch(err => console.error("Erro ao enviar foto:", err));
+  }).catch(err => {
+    console.error("Erro ao enviar foto:", err);
+    // Envia só a mensagem se a foto falhar
+    bot.sendMessage(msg.chat.id, "🍷 <b>Olá, seja bem-vindo! Aqui vocês irão resgatar seu Pack!</b>\n\nEscolha uma opção:", {
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: keyboard }
+    });
+  });
 } else {
+  // Se não houver foto, envia apenas a mensagem
   bot.sendMessage(msg.chat.id, "🍷 <b>Olá, seja bem-vindo! Aqui vocês irão resgatar seu Pack!</b>\n\nEscolha uma opção:", {
     parse_mode: "HTML",
-    reply_markup: {
-      inline_keyboard: keyboard
-    }
+    reply_markup: { inline_keyboard: keyboard }
   });
 }
 
