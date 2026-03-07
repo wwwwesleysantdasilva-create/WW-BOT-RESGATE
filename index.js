@@ -298,6 +298,11 @@ bot.on("message", (msg) => {
   }
 });
 
+/* ===== PEGAR FILE_ID DA IMAGEM ===== */
+bot.on("photo", (msg) => {
+  console.log(msg.photo);
+});
+
 /* ===== FIX POLLING ERROR ===== */
 bot.on("polling_error", (err) => {
   console.error("Polling error:", err.code);
