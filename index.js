@@ -8,12 +8,6 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const MASTER_ADMIN = 8235876348;
 const LOG_GROUP_ID = -1003713776395;
 
-const PRODUCTS = {
-  INJECT: { name: "💉 Inject Pack", group: -1003801083393 },
-  PHARM: { name: "🧪 Pharmacy Pack", group: -1003705721917 },
-  AIMLOCK: { name: "🚂 Aimlock Pack", group: -1003350845729 }
-};
-
 /* ================= INIT ================= */
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
@@ -31,6 +25,18 @@ db.serialize(() => {
     product TEXT,
     used INTEGER DEFAULT 0
   )`);
+  
+  // NOVA TABELA: Produtos Dinâmicos
+  db.run(`CREATE TABLE IF NOT EXISTS products (
+    id TEXT UNIQUE,
+    name TEXT,
+    group_id INTEGER
+  )`, () => {
+    // Insere os produtos antigos automaticamente para você não perder o que já tinha
+    db.run(`INSERT OR IGNORE INTO products (id, name, group_id) VALUES ('INJECT', '💉 Inject Pack', -1003801083393)`);
+    db.run(`INSERT OR IGNORE INTO products (id, name, group_id) VALUES ('PHARM', '🧪 Pharmacy Pack', -1003705721917)`);
+    db.run(`INSERT OR IGNORE INTO products (id, name, group_id) VALUES ('AIMLOCK', '🚂 Aimlock Pack', -1003350845729)`);
+  });
 });
 
 /* ================= HELPERS ================= */
@@ -110,24 +116,27 @@ bot.onText(/\/start/, (msg) => {
   logMsg(id, `👤 ${userName}`, "/start");
 
   isAdmin(id, (isAdm) => {
-    const keyboard = [
-      [{ text: "💉 Inject Pack", callback_data: "user_INJECT" }],
-      [{ text: "🧪 Pharmacy Pack", callback_data: "user_PHARM" }],
-      [{ text: "🚂 Aimlock Pack", callback_data: "user_AIMLOCK" }]
-    ];
+    // Lendo os produtos do banco de dados para montar os botões do cliente
+    db.all(`SELECT * FROM products`, [], (err, products) => {
+      const keyboard = [];
+      
+      products.forEach(p => {
+        keyboard.push([{ text: p.name, callback_data: `user_${p.id}` }]);
+      });
 
-    if (isAdm) {
-      keyboard.push([{ text: "🛠 Painel Admin", callback_data: "admin_panel" }]);
-    }
-
-    bot.sendMessage(
-      msg.chat.id,
-      "👋 <b>Olá, seja bem-vindo!</b>\n\nEscolha uma opção:",
-      {
-        parse_mode: "HTML",
-        reply_markup: { inline_keyboard: keyboard }
+      if (isAdm) {
+        keyboard.push([{ text: "🛠 Painel Admin", callback_data: "admin_panel" }]);
       }
-    );
+
+      bot.sendMessage(
+        msg.chat.id,
+        "👋 <b>Olá, seja bem-vindo!</b>\n\nEscolha uma opção:",
+        {
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: keyboard }
+        }
+      );
+    });
   });
 });
 
@@ -145,7 +154,9 @@ bot.on("callback_query", (q) => {
       state[id] = null;
 
       const buttons = [
-        [{ text: "🔑 Gerar Keys", callback_data: "admin_gen" }]
+        [{ text: "🔑 Gerar Keys", callback_data: "admin_gen" }],
+        [{ text: "📦 Add Produto", callback_data: "admin_add_prod" }],
+        [{ text: "🗑️ Remover Produto", callback_data: "admin_rem_prod" }]
       ];
 
       if (id === MASTER_ADMIN) {
@@ -164,17 +175,32 @@ bot.on("callback_query", (q) => {
     });
   }
 
+  // BOTÕES DO NOVO SISTEMA DE PRODUTOS
+  if (q.data === "admin_add_prod") {
+    state[id] = { step: "add_prod_id" };
+    return bot.sendMessage(chat, "Escreva um ID curto para o produto (Exemplo: VIP, SENSI, MACRO):");
+  }
+
+  if (q.data === "admin_rem_prod") {
+    state[id] = { step: "rem_prod" };
+    return bot.sendMessage(chat, "Envie o ID curto do produto que deseja remover:");
+  }
+
   if (q.data === "admin_gen") {
     state[id] = { step: "gen_choose" };
-    return bot.sendMessage(chat, "Escolha o pack:", {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "💉 Inject", callback_data: "gen_INJECT" }],
-          [{ text: "🧪 Pharmacy", callback_data: "gen_PHARM" }],
-          [{ text: "🚂 Aimlock", callback_data: "gen_AIMLOCK" }]
-        ]
-      }
+    
+    // Lê o banco para montar os botões de gerar keys
+    db.all(`SELECT * FROM products`, [], (err, products) => {
+      const keyboard = [];
+      products.forEach(p => {
+        keyboard.push([{ text: p.name, callback_data: `gen_${p.id}` }]);
+      });
+
+      return bot.sendMessage(chat, "Escolha para qual pack deseja gerar keys:", {
+        reply_markup: { inline_keyboard: keyboard }
+      });
     });
+    return;
   }
 
   if (q.data === "admin_add" && id === MASTER_ADMIN) {
@@ -193,24 +219,28 @@ bot.on("callback_query", (q) => {
   }
 
   if (q.data.startsWith("user_")) {
-    const product = q.data.replace("user_", "");
-    state[id] = { step: "await_key", product };
+    const productId = q.data.replace("user_", "");
+    state[id] = { step: "await_key", product: productId };
 
-    conversations[id].product = PRODUCTS[product];
-    logMsg(id, `👤 ${userName}`, PRODUCTS[product].name);
+    db.get(`SELECT * FROM products WHERE id=?`, [productId], (err, product) => {
+      if (!product) return bot.sendMessage(chat, "❌ Produto não encontrado.");
 
-    bot.sendMessage(
-      chat,
-      `📦 <b>${PRODUCTS[product].name}</b>\n\nEnvie sua <b>KEY</b>:`,
-      { parse_mode: "HTML" }
-    );
+      conversations[id].product = product;
+      logMsg(id, `👤 ${userName}`, product.name);
+
+      bot.sendMessage(
+        chat,
+        `📦 <b>${product.name}</b>\n\nEnvie sua <b>KEY</b>:`,
+        { parse_mode: "HTML" }
+      );
+    });
   }
 });
 
 /* ================= MESSAGES ================= */
 
 bot.on("message", (msg) => {
-  if (msg.text?.startsWith("/")) return; // 🔥 CORREÇÃO
+  if (msg.text?.startsWith("/")) return;
 
   const id = msg.from.id;
   const text = msg.text?.trim();
@@ -219,6 +249,37 @@ bot.on("message", (msg) => {
   const userName = msg.from.first_name || "Usuário";
   logMsg(id, `👤 ${userName}`, text);
 
+  // LOGICA PARA ADICIONAR E REMOVER PRODUTOS
+  if (state[id]?.step === "add_prod_id") {
+    state[id].tempId = text.toUpperCase().replace(/\s+/g, "_");
+    state[id].step = "add_prod_name";
+    return bot.sendMessage(msg.chat.id, "Agora envie o NOME visível do produto (Exemplo: 💎 VIP Pack):");
+  }
+
+  if (state[id]?.step === "add_prod_name") {
+    state[id].tempName = text;
+    state[id].step = "add_prod_group";
+    return bot.sendMessage(msg.chat.id, "Por fim, envie o ID do Grupo/Canal do Telegram (Exemplo: -100123456789):");
+  }
+
+  if (state[id]?.step === "add_prod_group") {
+    const groupId = Number(text);
+    if (isNaN(groupId)) return bot.sendMessage(msg.chat.id, "❌ ID inválido. Tente novamente enviando apenas os números.");
+    
+    db.run(`INSERT OR REPLACE INTO products (id, name, group_id) VALUES (?, ?, ?)`, [state[id].tempId, state[id].tempName, groupId]);
+    bot.sendMessage(msg.chat.id, `✅ Produto **${state[id].tempName}** adicionado com sucesso!`);
+    state[id] = null;
+    return;
+  }
+
+  if (state[id]?.step === "rem_prod") {
+    db.run(`DELETE FROM products WHERE id=?`, [text.toUpperCase()]);
+    bot.sendMessage(msg.chat.id, "✅ Produto removido do sistema.");
+    state[id] = null;
+    return;
+  }
+
+  // RESTANTE DA LÓGICA
   if (state[id]?.step === "add_admin" && id === MASTER_ADMIN) {
     db.run(`INSERT OR IGNORE INTO admins VALUES (?)`, [Number(text)]);
     state[id] = null;
@@ -258,8 +319,6 @@ bot.on("message", (msg) => {
 
   if (state[id]?.step === "await_key") {
     const productKey = state[id].product;
-    const product = PRODUCTS[productKey];
-
     conversations[id].key = text;
 
     db.get(`SELECT * FROM keys WHERE key=?`, [text], async (_, row) => {
@@ -268,29 +327,38 @@ bot.on("message", (msg) => {
         return bot.sendMessage(msg.chat.id, "❌ Key inválida.");
       }
 
-      const invite = await bot.createChatInviteLink(product.group, {
-        member_limit: 1
+      // Pega o grupo do produto direto do banco
+      db.get(`SELECT * FROM products WHERE id=?`, [productKey], async (err, product) => {
+        if (!product) return bot.sendMessage(msg.chat.id, "❌ Erro: Produto não existe mais.");
+
+        try {
+          const invite = await bot.createChatInviteLink(product.group_id, {
+            member_limit: 1
+          });
+
+          db.run(`UPDATE keys SET used=1 WHERE key=?`, [text]);
+
+          conversations[id].valid = true;
+          conversations[id].group = product.group_id;
+          conversations[id].joinTime = nowBR();
+
+          bot.sendMessage(
+            msg.chat.id,
+            `✅ <b>Resgate concluído!</b>\n\n${invite.invite_link}`,
+            { parse_mode: "HTML" }
+          );
+
+          const file = generateTXT(id);
+          bot.sendDocument(LOG_GROUP_ID, file, {
+            caption: `✅ RESGATE CONFIRMADO\n📦 ${product.name}\n👤 ${userName}\n🕒 ${nowBR()}`
+          });
+        } catch (error) {
+          bot.sendMessage(msg.chat.id, "❌ Erro ao gerar o link. O bot tem permissão de administrador no grupo?");
+        }
+
+        state[id] = null;
+        delete conversations[id];
       });
-
-      db.run(`UPDATE keys SET used=1 WHERE key=?`, [text]);
-
-      conversations[id].valid = true;
-      conversations[id].group = product.group;
-      conversations[id].joinTime = nowBR();
-
-      bot.sendMessage(
-        msg.chat.id,
-        `✅ <b>Resgate concluído!</b>\n\n${invite.invite_link}`,
-        { parse_mode: "HTML" }
-      );
-
-      const file = generateTXT(id);
-      bot.sendDocument(LOG_GROUP_ID, file, {
-        caption: `✅ RESGATE CONFIRMADO\n📦 ${product.name}\n👤 ${userName}\n🕒 ${nowBR()}`
-      });
-
-      state[id] = null;
-      delete conversations[id];
     });
   }
 });
@@ -300,4 +368,4 @@ bot.on("polling_error", (err) => {
   console.error("Polling error:", err.code);
 });
 
-console.log("🤖 BOT ONLINE — LOGS APENAS APÓS RESGATE");
+console.log("🤖 BOT ONLINE — LOGS E PRODUTOS DINÂMICOS ATIVADOS");
