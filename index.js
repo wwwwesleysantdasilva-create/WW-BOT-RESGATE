@@ -359,7 +359,7 @@ bot.on("message", (msg) => {
 
           bot.sendMessage(
             msg.chat.id,
-            `✅ <b>Acesso Liberado!</b>\n\nClique no link abaixo para entrar no grupo secreto:\n${invite.invite_link}`,
+            `✅ <b>Acesso Liberado!</b>\n\nClique no link abaixo para acessad seu pack:\n${invite.invite_link}`,
             { parse_mode: "HTML" }
           );
 
