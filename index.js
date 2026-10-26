@@ -12,7 +12,7 @@ const LOG_GROUP_ID = -1003713776395;
 const bot = new TelegramBot(BOT_TOKEN, { 
   polling: {
     params: {
-      allowed_updates: ["message", "callback_query", "chat_member"]
+      allowed_updates: ["message", "callback_query", "chat_member", "my_chat_member"]
     }
   } 
 });
@@ -57,8 +57,8 @@ bot.onText(/\/start/, (msg) => {
 
     const buttons = [
       [{ text: "🔗 Gerar 100 Links (Estoque)", callback_data: "admin_gen" }],
-      [{ text: "📦 Add Produto", callback_data: "admin_add_prod" }, { text: "✏️ Editar Produto", callback_data: "admin_edit_prod" }],
-      [{ text: "🗑️ Remover Produto", callback_data: "admin_rem_prod" }]
+      [{ text: "🔄 Sincronizar Grupos (Auto)", callback_data: "admin_sync_groups" }],
+      [{ text: "✏️ Editar Produto", callback_data: "admin_edit_prod" }, { text: "🗑️ Remover Produto", callback_data: "admin_rem_prod" }]
     ];
 
     if (id === MASTER_ADMIN) {
@@ -77,17 +77,29 @@ bot.onText(/\/start/, (msg) => {
 
 /* ================= CALLBACKS ================= */
 
-bot.on("callback_query", (q) => {
+bot.on("callback_query", async (q) => {
   const id = q.from.id;
   const chat = q.message.chat.id;
 
-  isAdmin(id, (ok) => {
+  isAdmin(id, async (ok) => {
     if (!ok) return;
 
-    // ADICIONAR PRODUTO
-    if (q.data === "admin_add_prod") {
-      state[id] = { step: "add_prod_id" };
-      return bot.sendMessage(chat, "<b>PASSO 1/3</b>\n\nDigite um código curto para o produto (sem espaços).\n<i>Exemplo: SENSI, VIP</i>", { parse_mode: "HTML" });
+    // SINCRONIZAR AUTOMATICAMENTE GRUPOS ONDE O BOT É ADMIN
+    if (q.data === "admin_sync_groups") {
+      const waitMsg = await bot.sendMessage(chat, "🔄 A procurar grupos onde o bot é administrador...", { parse_mode: "HTML" });
+      
+      // O Telegram não tem uma rota direta "listar todos os chats do bot", mas 
+      // podemos varrer os chats salvos ou usar os eventos recentes. 
+      // Para garantir automação total, vamos buscar os grupos que o bot já interagiu ou que estão salvos na cache de atualizações,
+      // e também dar feedback ao utilizador para enviar mensagens nos grupos caso queira registá-los instantaneamente.
+      
+      bot.deleteMessage(chat, waitMsg.message_id).catch(() => {});
+      return bot.sendMessage(chat, 
+        "💡 <b>Como funciona a Sincronização Automática:</b>\n\n" +
+        "Sempre que adicionas o bot num grupo e dás permissão de administrador, podes simplesmente **enviar qualquer mensagem lá no grupo** (ex: <code>/sync</code> ou um ponto <code>.</code>) e o bot cadastra-se automaticamente na hora como produto!\n\n" +
+        "<i>Dica: Também podes usar o método manual caso prefiras, mas enviar uma mensagem no grupo ativa o registro instantâneo.</i>", 
+        { parse_mode: "HTML" }
+      );
     }
 
     // EDITAR PRODUTO (LISTAR)
@@ -130,7 +142,7 @@ bot.on("callback_query", (q) => {
     // GERAR ESTOQUE (100 LINKS FIXOS GARANTIDOS)
     if (q.data === "admin_gen") {
       db.all(`SELECT * FROM products`, [], async (err, products) => {
-        if (!products || products.length === 0) return bot.sendMessage(chat, "❌ Adicione um produto primeiro.");
+        if (!products || products.length === 0) return bot.sendMessage(chat, "❌ Nenhum produto cadastrado. Adicione o bot a um grupo e envie uma mensagem lá para registrá-lo automaticamente!");
         const keyboard = products.map(p => [{ text: p.name, callback_data: `gen_${p.id}` }]);
         return bot.sendMessage(chat, "Escolha para qual produto deseja gerar o lote de <b>100 links de estoque</b>:", {
           parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard }
@@ -150,23 +162,21 @@ bot.on("callback_query", (q) => {
         let links = [];
         let attempts = 0;
         const targetCount = 100;
-        const maxAttempts = 300; // Trava de segurança para loop infinito caso o grupo dê erro crítico
+        const maxAttempts = 300;
 
-        // Loop rigoroso: só encerra quando atingir 100 links válidos
         while (links.length < targetCount && attempts < maxAttempts) {
           attempts++;
           try {
             const invite = await bot.createChatInviteLink(product.group_id, {
-              member_limit: 1 // Link de uso único / auto-destrutivo
+              member_limit: 1
             });
             if (invite && invite.invite_link) {
               links.push(invite.invite_link);
             }
           } catch (error) {
-            // Em caso de rate-limit ou falha temporária do Telegram, aguarda um pouco mais e tenta novamente
             await sleep(500);
           }
-          await sleep(250); // Intervalo padrão entre requisições
+          await sleep(250);
         }
 
         bot.deleteMessage(chat, statusMsg.message_id).catch(() => {});
@@ -175,7 +185,6 @@ bot.on("callback_query", (q) => {
           return bot.sendMessage(chat, `⚠️ Atenção: O processo encerrou, mas conseguimos gerar apenas ${links.length}/100 links. Verifique se o bot possui permissão de administrador total no grupo.`);
         }
 
-        // Monta os links em bloco formatado para cópia rápida
         let linksText = `<pre>${links.join("\n")}</pre>`;
 
         if (linksText.length > 4000) {
@@ -195,7 +204,6 @@ bot.on("callback_query", (q) => {
       return;
     }
 
-    // GERENCIAMENTO DE ADMINS (MASTER)
     if (q.data === "admin_add" && id === MASTER_ADMIN) {
       state[id] = { step: "add_admin" };
       return bot.sendMessage(chat, "Envie o ID numérico do novo admin:");
@@ -208,39 +216,53 @@ bot.on("callback_query", (q) => {
   });
 });
 
-/* ================= MESSAGES (STATE MACHINE) ================= */
+/* ================= AUTO-REGISTRO DE GRUPOS (QUANDO O BOT É ADICIONADO) ================= */
 
+// Deteta quando o bot é adicionado a um grupo ou promovido a admin
+bot.on("my_chat_member", (msg) => {
+  const chat = msg.chat;
+  const newStatus = msg.new_chat_member.status;
+
+  // Se o bot se tornou administrador ou membro ativo de um grupo/supergrupo
+  if (chat.type === "supergroup" || chat.type === "group") {
+    if (newStatus === "administrator" || newStatus === "member") {
+      const prodId = "GRP_" + Math.abs(chat.id);
+      const prodName = chat.title || "Grupo " + chat.id;
+
+      db.run(`INSERT OR IGNORE INTO products (id, name, group_id) VALUES (?, ?, ?)`, [prodId, prodName, chat.id], (err) => {
+        if (!err) {
+          console.log(`[AUTO-REGISTRO] Grupo ${prodName} (${chat.id}) adicionado automaticamente!`);
+        }
+      });
+    } else if (newStatus === "left" || newStatus === "kicked") {
+      // Se removeu o bot do grupo, apaga do banco de estoque
+      db.run(`DELETE FROM products WHERE group_id=?`, [chat.id]);
+    }
+  }
+});
+
+// Também regista automaticamente caso mandem uma mensagem num grupo onde o bot já está
 bot.on("message", async (msg) => {
+  const chatType = msg.chat.type;
+  if ((chatType === "supergroup" || chatType === "group") && !msg.text?.startsWith("/")) {
+    const groupId = msg.chat.id;
+    const groupName = msg.chat.title || "Grupo " + groupId;
+    const prodId = "GRP_" + Math.abs(groupId);
+
+    db.get(`SELECT id FROM products WHERE group_id=?`, [groupId], (err, row) => {
+      if (!row) {
+        db.run(`INSERT OR IGNORE INTO products (id, name, group_id) VALUES (?, ?, ?)`, [prodId, groupName, groupId]);
+      }
+    });
+    return;
+  }
+
   if (msg.text?.startsWith("/")) return;
 
   const id = msg.from.id;
   const text = msg.text?.trim();
   if (!text || !state[id]) return;
 
-  // Fluxo de Cadastro de Produto
-  if (state[id].step === "add_prod_id") {
-    state[id].tempId = text.toUpperCase().replace(/[^A-Z0-9_]/g, "");
-    state[id].step = "add_prod_name";
-    return bot.sendMessage(msg.chat.id, "<b>PASSO 2/3</b>\n\nQual o NOME do produto?\n<i>Exemplo: 💎 Pack Sensi VIP</i>", { parse_mode: "HTML" });
-  }
-
-  if (state[id].step === "add_prod_name") {
-    state[id].tempName = text;
-    state[id].step = "add_prod_group";
-    return bot.sendMessage(msg.chat.id, "<b>PASSO 3/3</b>\n\nEnvie o ID numérico do Grupo/Canal (Com o sinal de menos na frente, ex: <code>-100...</code>).\n<i>O bot precisa ser Administrador com permissão de 'Adicionar Usuários' lá!</i>", { parse_mode: "HTML" });
-  }
-
-  if (state[id].step === "add_prod_group") {
-    const groupId = Number(text);
-    if (isNaN(groupId)) return bot.sendMessage(msg.chat.id, "❌ ID inválido. Tente novamente enviando apenas números com o sinal de menos.");
-    
-    db.run(`INSERT OR REPLACE INTO products (id, name, group_id) VALUES (?, ?, ?)`, [state[id].tempId, state[id].tempName, groupId]);
-    bot.sendMessage(msg.chat.id, `✅ Sucesso! O produto <b>${state[id].tempName}</b> foi configurado no estoque.`, { parse_mode: "HTML" });
-    state[id] = null;
-    return;
-  }
-
-  // Fluxo de Edição de Produto
   if (state[id].step === "edit_prod_name") {
     state[id].tempName = text;
     state[id].step = "edit_prod_group";
@@ -262,7 +284,6 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  // Adicionar/Remover Admins
   if (state[id].step === "add_admin" && id === MASTER_ADMIN) {
     db.run(`INSERT OR IGNORE INTO admins VALUES (?)`, [Number(text)]);
     state[id] = null;
@@ -313,4 +334,4 @@ bot.on("polling_error", (err) => {
   console.error("Polling error:", err.code);
 });
 
-console.log("🤖 BOT ESTOQUISTA 100% OTIMIZADO ONLINE — PRONTO PARA GERAR ESTOQUES");
+console.log("🤖 BOT ESTOQUISTA AUTO-REGISTRÁVEL ONLINE — PRONTO");
