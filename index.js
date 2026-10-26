@@ -84,25 +84,14 @@ bot.on("callback_query", async (q) => {
   isAdmin(id, async (ok) => {
     if (!ok) return;
 
-    // SINCRONIZAR AUTOMATICAMENTE GRUPOS ONDE O BOT É ADMIN
     if (q.data === "admin_sync_groups") {
-      const waitMsg = await bot.sendMessage(chat, "🔄 A procurar grupos onde o bot é administrador...", { parse_mode: "HTML" });
-      
-      // O Telegram não tem uma rota direta "listar todos os chats do bot", mas 
-      // podemos varrer os chats salvos ou usar os eventos recentes. 
-      // Para garantir automação total, vamos buscar os grupos que o bot já interagiu ou que estão salvos na cache de atualizações,
-      // e também dar feedback ao utilizador para enviar mensagens nos grupos caso queira registá-los instantaneamente.
-      
-      bot.deleteMessage(chat, waitMsg.message_id).catch(() => {});
       return bot.sendMessage(chat, 
         "💡 <b>Como funciona a Sincronização Automática:</b>\n\n" +
-        "Sempre que adicionas o bot num grupo e dás permissão de administrador, podes simplesmente **enviar qualquer mensagem lá no grupo** (ex: <code>/sync</code> ou um ponto <code>.</code>) e o bot cadastra-se automaticamente na hora como produto!\n\n" +
-        "<i>Dica: Também podes usar o método manual caso prefiras, mas enviar uma mensagem no grupo ativa o registro instantâneo.</i>", 
+        "Sempre que adicionas o bot num grupo e dás permissão de administrador, podes simplesmente **enviar qualquer mensagem lá no grupo** (ex: um ponto <code>.</code>) e o bot cadastra-se automaticamente na hora como produto!", 
         { parse_mode: "HTML" }
       );
     }
 
-    // EDITAR PRODUTO (LISTAR)
     if (q.data === "admin_edit_prod") {
       db.all(`SELECT * FROM products`, [], (err, products) => {
         if (!products || products.length === 0) return bot.sendMessage(chat, "❌ Nenhum produto cadastrado para editar.");
@@ -122,7 +111,6 @@ bot.on("callback_query", async (q) => {
       return;
     }
 
-    // REMOVER PRODUTO
     if (q.data === "admin_rem_prod") {
       state[id] = null;
       db.all(`SELECT * FROM products`, [], (err, products) => {
@@ -139,7 +127,7 @@ bot.on("callback_query", async (q) => {
       return bot.sendMessage(chat, `✅ Produto apagado com sucesso!`);
     }
 
-    // GERAR ESTOQUE (100 LINKS FIXOS GARANTIDOS)
+    // GERAR ESTOQUE (100 LINKS OTIMIZADOS E RÁPIDOS)
     if (q.data === "admin_gen") {
       db.all(`SELECT * FROM products`, [], async (err, products) => {
         if (!products || products.length === 0) return bot.sendMessage(chat, "❌ Nenhum produto cadastrado. Adicione o bot a um grupo e envie uma mensagem lá para registrá-lo automaticamente!");
@@ -157,33 +145,36 @@ bot.on("callback_query", async (q) => {
       db.get(`SELECT * FROM products WHERE id=?`, [prodId], async (err, product) => {
         if (!product) return bot.sendMessage(chat, "❌ Produto não encontrado.");
 
-        const statusMsg = await bot.sendMessage(chat, `⏳ Gerando lote obrigatório de <b>100 links</b> para <b>${product.name}</b>...\nIsso pode levar alguns segundos devido às travas de segurança do Telegram.`, { parse_mode: "HTML" });
-        
+        const statusMsg = codeProgressMsg(chat, product.name);
+        // Cria uma mensagem dinâmica de carregamento
+        const msgLoading = await bot.sendMessage(chat, `⚡ A gerar 100 links para <b>${product.name}</b> de forma acelerada...`, { parse_mode: "HTML" });
+
         let links = [];
-        let attempts = 0;
         const targetCount = 100;
-        const maxAttempts = 300;
+        let batchSize = 10; // Dispara blocos em paralelo para ir muito mais rápido
 
-        while (links.length < targetCount && attempts < maxAttempts) {
-          attempts++;
-          try {
-            const invite = await bot.createChatInviteLink(product.group_id, {
-              member_limit: 1
-            });
-            if (invite && invite.invite_link) {
-              links.push(invite.invite_link);
-            }
-          } catch (error) {
-            await sleep(500);
+        while (links.length < targetCount) {
+          let promises = [];
+          let currentBatch = Math.min(batchSize, targetCount - links.length);
+
+          for (let i = 0; i < currentBatch; i++) {
+            promises.push(
+              bot.createChatInviteLink(product.group_id, { member_limit: 1 })
+                .then(invite => invite?.invite_link)
+                .catch(() => null)
+            );
           }
-          await sleep(250);
+
+          let results = await Promise.all(promises);
+          for (let link of results) {
+            if (link) links.push(link);
+          }
+
+          // Pequena pausa estratégica para proteger contra o limite de requisições do Telegram
+          await sleep(150);
         }
 
-        bot.deleteMessage(chat, statusMsg.message_id).catch(() => {});
-
-        if (links.length < targetCount) {
-          return bot.sendMessage(chat, `⚠️ Atenção: O processo encerrou, mas conseguimos gerar apenas ${links.length}/100 links. Verifique se o bot possui permissão de administrador total no grupo.`);
-        }
+        bot.deleteMessage(chat, msgLoading.message_id).catch(() => {});
 
         let linksText = `<pre>${links.join("\n")}</pre>`;
 
@@ -216,32 +207,29 @@ bot.on("callback_query", async (q) => {
   });
 });
 
-/* ================= AUTO-REGISTRO DE GRUPOS (QUANDO O BOT É ADICIONADO) ================= */
+/* ================= AUXILIAR DE MENSAGEM ================= */
+function codeProgressMsg(chatId, productName) {
+  return true;
+}
 
-// Deteta quando o bot é adicionado a um grupo ou promovido a admin
+/* ================= AUTO-REGISTRO DE GRUPOS ================= */
+
 bot.on("my_chat_member", (msg) => {
   const chat = msg.chat;
   const newStatus = msg.new_chat_member.status;
 
-  // Se o bot se tornou administrador ou membro ativo de um grupo/supergrupo
   if (chat.type === "supergroup" || chat.type === "group") {
     if (newStatus === "administrator" || newStatus === "member") {
       const prodId = "GRP_" + Math.abs(chat.id);
       const prodName = chat.title || "Grupo " + chat.id;
 
-      db.run(`INSERT OR IGNORE INTO products (id, name, group_id) VALUES (?, ?, ?)`, [prodId, prodName, chat.id], (err) => {
-        if (!err) {
-          console.log(`[AUTO-REGISTRO] Grupo ${prodName} (${chat.id}) adicionado automaticamente!`);
-        }
-      });
+      db.run(`INSERT OR IGNORE INTO products (id, name, group_id) VALUES (?, ?, ?)`, [prodId, prodName, chat.id]);
     } else if (newStatus === "left" || newStatus === "kicked") {
-      // Se removeu o bot do grupo, apaga do banco de estoque
       db.run(`DELETE FROM products WHERE group_id=?`, [chat.id]);
     }
   }
 });
 
-// Também regista automaticamente caso mandem uma mensagem num grupo onde o bot já está
 bot.on("message", async (msg) => {
   const chatType = msg.chat.type;
   if ((chatType === "supergroup" || chatType === "group") && !msg.text?.startsWith("/")) {
@@ -334,4 +322,4 @@ bot.on("polling_error", (err) => {
   console.error("Polling error:", err.code);
 });
 
-console.log("🤖 BOT ESTOQUISTA AUTO-REGISTRÁVEL ONLINE — PRONTO");
+console.log("🤖 BOT ESTOQUISTA ULTRA-RÁPIDO ONLINE — PRONTO");
