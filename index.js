@@ -57,14 +57,13 @@ bot.onText(/\/start/, (msg) => {
 
     const buttons = [
       [{ text: "🔗 Gerar 100 Links (Estoque)", callback_data: "admin_gen" }],
-      [{ text: "🔄 Sincronizar Grupos (Auto)", callback_data: "admin_sync_groups" }],
-      [{ text: "✏️ Editar Produto", callback_data: "admin_edit_prod" }, { text: "🗑️ Remover Produto", callback_data: "admin_rem_prod" }]
+      [{ text: "🔄 Grupos Sincronizados (Auto)", callback_data: "admin_sync_groups" }],
+      [{ text: "✏️ Editar Nome de Produto", callback_data: "admin_edit_prod" }, { text: "🗑️ Remover Produto", callback_data: "admin_rem_prod" }]
     ];
 
     if (id === MASTER_ADMIN) {
       buttons.push(
-        [{ text: "➕ Add Admin", callback_data: "admin_add" }],
-        [{ text: "➖ Remover Admin", callback_data: "admin_remove" }]
+        [{ text: "➕ Add Admin", callback_data: "admin_add" }, { text: "➖ Remover Admin", callback_data: "admin_remove" }]
       );
     }
 
@@ -84,19 +83,33 @@ bot.on("callback_query", async (q) => {
   isAdmin(id, async (ok) => {
     if (!ok) return;
 
+    // CONSULTAR GRUPOS ONDE O BOT É ADMIN (AUTO-CADASTRADOS)
     if (q.data === "admin_sync_groups") {
-      return bot.sendMessage(chat, 
-        "💡 <b>Como funciona a Sincronização Automática:</b>\n\n" +
-        "Sempre que adicionas o bot num grupo e dás permissão de administrador, podes simplesmente **enviar qualquer mensagem lá no grupo** (ex: um ponto <code>.</code>) e o bot cadastra-se automaticamente na hora como produto!", 
-        { parse_mode: "HTML" }
-      );
+      db.all(`SELECT * FROM products`, [], (err, rows) => {
+        if (!rows || rows.length === 0) {
+          return bot.sendMessage(chat, 
+            "🔄 <b>Nenhum grupo detectado ainda.</b>\n\n" +
+            "💡 Basta **adicionar o bot como Administrador** no seu grupo (e mandar uma mensagem lá) para que ele seja reconhecido e cadastrado automaticamente aqui!", 
+            { parse_mode: "HTML" }
+          );
+        }
+        
+        let list = rows.map(r => `• <b>${r.name}</b> (ID: <code>${r.group_id}</code>)`).join("\n");
+        return bot.sendMessage(chat, 
+          `🔄 <b>Produtos/Grupos Detectados Automaticamente (${rows.length}):</b>\n\n${list}\n\n` +
+          `<i>Para adicionar novos, basta promover o bot a Administrador no grupo desejado.</i>`, 
+          { parse_mode: "HTML" }
+        );
+      });
+      return;
     }
 
+    // EDITAR APENAS NOME DO PRODUTO
     if (q.data === "admin_edit_prod") {
       db.all(`SELECT * FROM products`, [], (err, products) => {
         if (!products || products.length === 0) return bot.sendMessage(chat, "❌ Nenhum produto cadastrado para editar.");
         const keyboard = products.map(p => [{ text: `✏️ Editar: ${p.name}`, callback_data: `editprod_${p.id}` }]);
-        return bot.sendMessage(chat, "Escolha qual produto deseja <b>editar</b>:", { parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
+        return bot.sendMessage(chat, "Escolha qual produto deseja **renomear**:", { parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
       });
       return;
     }
@@ -105,18 +118,19 @@ bot.on("callback_query", async (q) => {
       const prodId = q.data.replace("editprod_", "");
       db.get(`SELECT * FROM products WHERE id=?`, [prodId], (err, product) => {
         if (!product) return bot.sendMessage(chat, "❌ Produto não encontrado.");
-        state[id] = { step: "edit_prod_name", prodId: product.id };
-        return bot.sendMessage(chat, `Editando produto: <b>${product.name}</b>\n\nDigite o <b>novo NOME</b> para este produto:`, { parse_mode: "HTML" });
+        state[id] = { step: "edit_prod_name_only", prodId: product.id };
+        return bot.sendMessage(chat, `Produto selecionado: <b>${product.name}</b>\n\nDigite o **novo NOME** exibido para este produto:`, { parse_mode: "HTML" });
       });
       return;
     }
 
+    // REMOVER PRODUTO
     if (q.data === "admin_rem_prod") {
       state[id] = null;
       db.all(`SELECT * FROM products`, [], (err, products) => {
         if (!products || products.length === 0) return bot.sendMessage(chat, "❌ Nenhum produto cadastrado.");
         const keyboard = products.map(p => [{ text: `❌ Deletar: ${p.name}`, callback_data: `delprod_${p.id}` }]);
-        return bot.sendMessage(chat, "Escolha qual produto remover:", { parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
+        return bot.sendMessage(chat, "Escolha qual produto remover da lista:", { parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
       });
       return;
     }
@@ -124,13 +138,15 @@ bot.on("callback_query", async (q) => {
     if (q.data.startsWith("delprod_")) {
       const prodId = q.data.replace("delprod_", "");
       db.run(`DELETE FROM products WHERE id=?`, [prodId]);
-      return bot.sendMessage(chat, `✅ Produto apagado com sucesso!`);
+      return bot.sendMessage(chat, `✅ Produto removido com sucesso!`);
     }
 
-    // GERAR ESTOQUE (100 LINKS OTIMIZADOS E RÁPIDOS)
+    // GERAR ESTOQUE (100 LINKS OTIMIZADOS)
     if (q.data === "admin_gen") {
       db.all(`SELECT * FROM products`, [], async (err, products) => {
-        if (!products || products.length === 0) return bot.sendMessage(chat, "❌ Nenhum produto cadastrado. Adicione o bot a um grupo e envie uma mensagem lá para registrá-lo automaticamente!");
+        if (!products || products.length === 0) {
+          return bot.sendMessage(chat, "❌ Nenhum grupo cadastrado como produto. Adicione o bot como Administrador num grupo para ele aparecer aqui automaticamente!");
+        }
         const keyboard = products.map(p => [{ text: p.name, callback_data: `gen_${p.id}` }]);
         return bot.sendMessage(chat, "Escolha para qual produto deseja gerar o lote de <b>100 links de estoque</b>:", {
           parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard }
@@ -145,13 +161,11 @@ bot.on("callback_query", async (q) => {
       db.get(`SELECT * FROM products WHERE id=?`, [prodId], async (err, product) => {
         if (!product) return bot.sendMessage(chat, "❌ Produto não encontrado.");
 
-        const statusMsg = codeProgressMsg(chat, product.name);
-        // Cria uma mensagem dinâmica de carregamento
         const msgLoading = await bot.sendMessage(chat, `⚡ A gerar 100 links para <b>${product.name}</b> de forma acelerada...`, { parse_mode: "HTML" });
 
         let links = [];
         const targetCount = 100;
-        let batchSize = 10; // Dispara blocos em paralelo para ir muito mais rápido
+        let batchSize = 10;
 
         while (links.length < targetCount) {
           let promises = [];
@@ -170,7 +184,6 @@ bot.on("callback_query", async (q) => {
             if (link) links.push(link);
           }
 
-          // Pequena pausa estratégica para proteger contra o limite de requisições do Telegram
           await sleep(150);
         }
 
@@ -207,13 +220,9 @@ bot.on("callback_query", async (q) => {
   });
 });
 
-/* ================= AUXILIAR DE MENSAGEM ================= */
-function codeProgressMsg(chatId, productName) {
-  return true;
-}
+/* ================= AUTO-REGISTRO EM TEMPO REAL ================= */
 
-/* ================= AUTO-REGISTRO DE GRUPOS ================= */
-
+// 1. Quando o bot é adicionado como admin no grupo
 bot.on("my_chat_member", (msg) => {
   const chat = msg.chat;
   const newStatus = msg.new_chat_member.status;
@@ -230,9 +239,10 @@ bot.on("my_chat_member", (msg) => {
   }
 });
 
+// 2. Quando o bot detecta qualquer mensagem enviada no grupo
 bot.on("message", async (msg) => {
   const chatType = msg.chat.type;
-  if ((chatType === "supergroup" || chatType === "group") && !msg.text?.startsWith("/")) {
+  if (chatType === "supergroup" || chatType === "group") {
     const groupId = msg.chat.id;
     const groupName = msg.chat.title || "Grupo " + groupId;
     const prodId = "GRP_" + Math.abs(groupId);
@@ -251,21 +261,12 @@ bot.on("message", async (msg) => {
   const text = msg.text?.trim();
   if (!text || !state[id]) return;
 
-  if (state[id].step === "edit_prod_name") {
-    state[id].tempName = text;
-    state[id].step = "edit_prod_group";
-    return bot.sendMessage(msg.chat.id, `Digite o <b>novo ID do Grupo</b> para o produto <b>${text}</b>:`, { parse_mode: "HTML" });
-  }
-
-  if (state[id].step === "edit_prod_group") {
-    const groupId = Number(text);
-    if (isNaN(groupId)) return bot.sendMessage(msg.chat.id, "❌ ID de grupo inválido. Envie apenas números.");
-
-    db.run(`UPDATE products SET name=?, group_id=? WHERE id=?`, [state[id].tempName, groupId, state[id].prodId], (err) => {
+  if (state[id].step === "edit_prod_name_only") {
+    db.run(`UPDATE products SET name=? WHERE id=?`, [text, state[id].prodId], (err) => {
       if (err) {
-        bot.sendMessage(msg.chat.id, "❌ Erro ao atualizar produto no banco de dados.");
+        bot.sendMessage(msg.chat.id, "❌ Erro ao renomear produto no banco de dados.");
       } else {
-        bot.sendMessage(msg.chat.id, `✅ Produto atualizado com sucesso!`, { parse_mode: "HTML" });
+        bot.sendMessage(msg.chat.id, `✅ Nome do produto alterado para <b>${text}</b> com sucesso!`, { parse_mode: "HTML" });
       }
       state[id] = null;
     });
@@ -322,4 +323,4 @@ bot.on("polling_error", (err) => {
   console.error("Polling error:", err.code);
 });
 
-console.log("🤖 BOT ESTOQUISTA ULTRA-RÁPIDO ONLINE — PRONTO");
+console.log("🤖 BOT ESTOQUISTA AUTO-REGISTRÁVEL COMPLETO ONLINE");
