@@ -452,6 +452,7 @@ bot.on('chat_member', (msg) => {
 
 /* ===== FIX POLLING ERROR ===== */
 bot.on("polling_error", (err) => {
+  if (err.code === "ETELEGRAM") return;
   console.error("Polling error:", err.code);
 });
 
