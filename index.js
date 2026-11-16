@@ -67,55 +67,51 @@ const escapeHTML = (str = "") =>
 // Envia o log de entrada para um canal do Discord via webhook (Components V2)
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
-// 🎨 EMOJIS DO DISCORD
-// Troque pelos seus emojis personalizados no formato <:nome:ID>
-// (animado: <a:nome:ID>). Para pegar o código, no Discord digite \:nome_do_emoji: e envie.
-const DISCORD_EMOJIS = {
-  titulo: "📥",
-  produto: "📦",
-  membro: "👤",
-  id: "🆔",
-  hora: "🕒",
-  link: "🔗"
-};
+// false = link no topo da mesma mensagem, fora do container (igual ao seu modelo)
+// true  = link em uma mensagem separada, só texto (garante busca pelo link no Discord)
+const LINK_EM_MENSAGEM_SEPARADA = false;
 
 // Evita que nomes com *, _, ~, ` etc. quebrem a formatação do Discord
 const escapeDiscord = (str = "") => String(str).replace(/([\\*_~`|>#\[\]()])/g, "\\$1");
 
 const buildDiscordPayload = (log) => {
-  const E = DISCORD_EMOJIS;
+  // Link de acesso por fora (acima do container)
+  const linkFora = { type: 10, content: log.linkUrl };
+
+  const container = {
+    type: 17,
+    accent_color: null,
+    spoiler: false,
+    components: [
+      {
+        type: 10,
+        content: "## <:1299199732358582336:1571735242283417631> Acesso ao Pack concluído "
+      },
+      { type: 14, divider: true, spacing: 1 },
+      {
+        type: 10,
+        content:
+          `## <:link:1571738667444215858>  Link: ${log.linkUrl}\n\n` +
+          `**<:package1:1571125254733041725> Produto:** ${escapeDiscord(log.prodName).slice(0, 200)}\n` +
+          `**<:relogio_StorM:1531049138291216414> Horario:** ${log.timestamp}\n` +
+          `**<:afiliado:1571124567483744288> Nome:** ${escapeDiscord(log.fullName).slice(0, 200)}\n` +
+          `**<:afiliado:1571124567483744288> Username:** ${escapeDiscord(log.usernameOnly)}\n` +
+          `**<:papel:1571738363117961286> User ID:** ${log.userId}`
+      },
+      { type: 14, divider: true, spacing: 1 },
+      {
+        type: 10,
+        content:
+          "-# **Garantia Encerrada** Seu Pedido Foi entregue e foi acessado, Não será reenviado outros links."
+      }
+    ]
+  };
 
   return {
     username: "WW SENSI — Logs",
     flags: 32768, // IS_COMPONENTS_V2
     allowed_mentions: { parse: [] }, // ninguém é marcado por acidente
-    components: [
-      {
-        type: 17, // Container
-        accent_color: 0x22c55e, // cor da barra lateral
-        components: [
-          {
-            type: 10, // Text Display
-            content: `## ${E.titulo} NOVO ACESSO RESGATADO\n-# Estoque • WW SENSI`
-          },
-          { type: 14, divider: true, spacing: 1 }, // Separator
-          {
-            type: 10,
-            content:
-              `${E.produto} **Produto/Grupo**\n${escapeDiscord(log.prodName).slice(0, 500)}\n\n` +
-              `${E.membro} **Membro**\n${escapeDiscord(log.userNameDisplay).slice(0, 500)}\n\n` +
-              `${E.id} **ID**\n\`${log.userId}\``
-          },
-          { type: 14, divider: true, spacing: 1 },
-          {
-            type: 10,
-            content:
-              `${E.link} **Link Utilizado**\n\`${log.linkUrl}\`\n\n` +
-              `-# ${E.hora} ${log.timestamp}`
-          }
-        ]
-      }
-    ]
+    components: LINK_EM_MENSAGEM_SEPARADA ? [container] : [linkFora, container]
   };
 };
 
@@ -148,16 +144,16 @@ const sendDiscordLog = async (log) => {
   if (!DISCORD_WEBHOOK_URL) return;
 
   try {
-    // 1) Link acima do container, como texto puro (dá pra pesquisar no Discord)
-    //    flags: 4 = SUPPRESS_EMBEDS (não mostra a prévia do convite)
-    await postDiscord({
-      username: "WW SENSI — Logs",
-      content: log.linkUrl,
-      flags: 4,
-      allowed_mentions: { parse: [] }
-    });
+    if (LINK_EM_MENSAGEM_SEPARADA) {
+      // flags: 4 = SUPPRESS_EMBEDS (não mostra a prévia do convite)
+      await postDiscord({
+        username: "WW SENSI — Logs",
+        content: log.linkUrl,
+        flags: 4,
+        allowed_mentions: { parse: [] }
+      });
+    }
 
-    // 2) Container com os detalhes (Components V2)
     await postDiscord(buildDiscordPayload(log), true);
   } catch (e) {
     console.error("❌ Erro ao enviar para o Discord:", e.message);
@@ -750,7 +746,7 @@ bot.on("chat_member", (msg) => {
       .catch((e) => console.error("❌ Erro ao enviar para o grupo de logs:", e?.response?.body?.description || e.message));
 
     // Também envia para o Discord (se DISCORD_WEBHOOK_URL estiver configurada)
-    sendDiscordLog({ prodName, userNameDisplay, userId, timestamp, linkUrl });
+    sendDiscordLog({ prodName, fullName, usernameOnly, userId, timestamp, linkUrl });
   });
 });
 
