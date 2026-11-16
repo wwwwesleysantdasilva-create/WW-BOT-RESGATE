@@ -17,7 +17,11 @@ const bot = new TelegramBot(BOT_TOKEN, {
   } 
 });
 
-const db = new sqlite3.Database("./database.sqlite");
+const DB_DIR = (process.env.RAILWAY_VOLUME_MOUNT_PATH || ".").replace(/\/$/, "");
+const db = new sqlite3.Database(`${DB_DIR}/database.sqlite`, (err) => {
+  if (err) console.error("❌ Erro ao abrir o banco de dados:", err.message);
+  else console.log(`💾 Banco de dados conectado em: ${DB_DIR}/database.sqlite`);
+});
 
 let state = {};
 
