@@ -12,7 +12,7 @@ const LOG_GROUP_ID = -1003713776395;
 const bot = new TelegramBot(BOT_TOKEN, {
   polling: {
     params: {
-      allowed_updates: ["message", "callback_query", "chat_member", "my_chat_member"]
+      allowed_updates: JSON.stringify(["message", "callback_query", "chat_member", "my_chat_member"])
     }
   }
 });
@@ -601,5 +601,17 @@ bot.on("polling_error", (err) => {
 });
 
 process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e));
+
+bot
+  .getMe()
+  .then((me) => console.log(`🔑 Conectado como @${me.username} (id ${me.id})`))
+  .catch((e) => console.error("❌ Token inválido ou sem conexão com o Telegram:", e.message));
+
+bot
+  .getWebHookInfo()
+  .then((info) => {
+    if (info.url) console.error(`⚠️ Existe um webhook ativo (${info.url}). Ele bloqueia o polling!`);
+  })
+  .catch(() => {});
 
 console.log("🤖 BOT ESTOQUISTA AUTO-REGISTRÁVEL COMPLETO ONLINE");
