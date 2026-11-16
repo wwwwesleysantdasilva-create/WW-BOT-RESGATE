@@ -74,6 +74,9 @@ const LINK_EM_MENSAGEM_SEPARADA = true;
 // Evita que nomes com *, _, ~, ` etc. quebrem a formatação do Discord
 const escapeDiscord = (str = "") => String(str).replace(/([\\*_~`|>#\[\]()])/g, "\\$1");
 
+// Deixa o valor copiável (entre crases). Crases dentro do texto viram ' para não quebrar
+const code = (str = "") => "`" + String(str).replace(/`/g, "'").slice(0, 200) + "`";
+
 const buildDiscordPayload = (log) => {
   // Link de acesso por fora (acima do container)
   const linkFora = { type: 10, content: log.linkUrl };
@@ -91,12 +94,12 @@ const buildDiscordPayload = (log) => {
       {
         type: 10,
         content:
-          `## <:link:1571738667444215858>  Link: ${log.linkUrl}\n\n` +
-          `**<:package1:1571125254733041725> Produto:** ${escapeDiscord(log.prodName).slice(0, 200)}\n` +
-          `**<:relogio_StorM:1531049138291216414> Horario:** ${log.timestamp}\n` +
-          `**<:afiliado:1571124567483744288> Nome:** ${escapeDiscord(log.fullName).slice(0, 200)}\n` +
-          `**<:afiliado:1571124567483744288> Username:** ${escapeDiscord(log.usernameOnly)}\n` +
-          `**<:papel:1571738363117961286> User ID:** ${log.userId}`
+          `## <:link:1571738667444215858>  Link:\n${code(log.linkUrl)}\n\n` +
+          `**<:package1:1571125254733041725> Produto:** ${code(log.prodName)}\n` +
+          `**<:relogio_StorM:1531049138291216414> Horario:** ${code(log.timestamp)}\n` +
+          `**<:afiliado:1571124567483744288> Nome:** ${code(log.fullName)}\n` +
+          `**<:afiliado:1571124567483744288> Username:** ${code(log.usernameOnly)}\n` +
+          `**<:papel:1571738363117961286> User ID:** ${code(log.userId)}`
       },
       { type: 14, divider: true, spacing: 1 },
       {
