@@ -64,18 +64,143 @@ const escapeHTML = (str = "") =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
+// Envia o log de entrada para um canal do Discord via webhook (Components V2)
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+
+// 🎨 EMOJIS DO DISCORD
+// Troque pelos seus emojis personalizados no formato <:nome:ID>
+// (animado: <a:nome:ID>). Para pegar o código, no Discord digite \:nome_do_emoji: e envie.
+const DISCORD_EMOJIS = {
+  titulo: "📥",
+  produto: "📦",
+  membro: "👤",
+  id: "🆔",
+  hora: "🕒",
+  link: "🔗"
+};
+
+// Evita que nomes com *, _, ~, ` etc. quebrem a formatação do Discord
+const escapeDiscord = (str = "") => String(str).replace(/([\\*_~`|>#\[\]()])/g, "\\$1");
+
+const buildDiscordPayload = (log) => {
+  const E = DISCORD_EMOJIS;
+
+  return {
+    username: "WW SENSI — Logs",
+    flags: 32768, // IS_COMPONENTS_V2
+    allowed_mentions: { parse: [] }, // ninguém é marcado por acidente
+    components: [
+      {
+        type: 17, // Container
+        accent_color: 0x22c55e, // cor da barra lateral
+        components: [
+          {
+            type: 10, // Text Display
+            content: `## ${E.titulo} NOVO ACESSO RESGATADO\n-# Estoque • WW SENSI`
+          },
+          { type: 14, divider: true, spacing: 1 }, // Separator
+          {
+            type: 10,
+            content:
+              `${E.produto} **Produto/Grupo**\n${escapeDiscord(log.prodName).slice(0, 500)}\n\n` +
+              `${E.membro} **Membro**\n${escapeDiscord(log.userNameDisplay).slice(0, 500)}\n\n` +
+              `${E.id} **ID**\n\`${log.userId}\``
+          },
+          { type: 14, divider: true, spacing: 1 },
+          {
+            type: 10,
+            content:
+              `${E.link} **Link Utilizado**\n\`${log.linkUrl}\`\n\n` +
+              `-# ${E.hora} ${log.timestamp}`
+          }
+        ]
+      }
+    ]
+  };
+};
+
+// Faz o POST no webhook do Discord (com retry em caso de rate limit)
+const postDiscord = async (body, withComponents = false, tries = 0) => {
+  const url = new URL(DISCORD_WEBHOOK_URL);
+  // with_components=true é obrigatório para webhooks enviarem Components V2
+  if (withComponents) url.searchParams.set("with_components", "true");
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  // Rate limit do Discord: espera e tenta de novo
+  if (res.status === 429 && tries < 3) {
+    const data = await res.json().catch(() => ({}));
+    await sleep(((data.retry_after || 1) + 0.5) * 1000);
+    return postDiscord(body, withComponents, tries + 1);
+  }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    console.error(`❌ Discord webhook falhou: HTTP ${res.status} ${text.slice(0, 300)}`);
+  }
+};
+
+const sendDiscordLog = async (log) => {
+  if (!DISCORD_WEBHOOK_URL) return;
+
+  try {
+    // 1) Link acima do container, como texto puro (dá pra pesquisar no Discord)
+    //    flags: 4 = SUPPRESS_EMBEDS (não mostra a prévia do convite)
+    await postDiscord({
+      username: "WW SENSI — Logs",
+      content: log.linkUrl,
+      flags: 4,
+      allowed_mentions: { parse: [] }
+    });
+
+    // 2) Container com os detalhes (Components V2)
+    await postDiscord(buildDiscordPayload(log), true);
+  } catch (e) {
+    console.error("❌ Erro ao enviar para o Discord:", e.message);
+  }
+};
+
 // Cria um link respeitando o retry_after do Telegram (anti-flood)
+let floodUntil = 0;
+let floodCount = 0;
+let fatalError = null; // erro sem solução (ex: bot sem permissão)
+
 const createLink = async (groupId, tries = 0) => {
+  // Se o Telegram mandou esperar, todos os workers pausam juntos
+  const wait = floodUntil - Date.now();
+  if (wait > 0) await sleep(wait);
+
   try {
     const inv = await bot.createChatInviteLink(groupId, { member_limit: 1 });
     return inv.invite_link;
   } catch (e) {
     const retry = e?.response?.body?.parameters?.retry_after;
-    if (retry && tries < 5) {
-      await sleep((retry + 1) * 1000);
+    // Flood control: sempre espera e tenta de novo (nunca desiste)
+    if (retry) {
+      floodCount++;
+      floodUntil = Math.max(floodUntil, Date.now() + (retry + 1) * 1000);
+      console.warn(`⏳ Flood control do Telegram: aguardando ${retry}s`);
+      return createLink(groupId, tries);
+    }
+
+    const desc = e?.response?.body?.description || e.message;
+    console.error("❌ Erro ao criar link:", desc);
+
+    // Erros sem solução: para tudo em vez de insistir
+    if (/not enough rights|CHAT_ADMIN_REQUIRED|chat not found|bot was kicked|bot is not a member|rights to manage/i.test(desc)) {
+      fatalError = desc;
+      return null;
+    }
+
+    // Erro temporário (rede etc.): tenta mais algumas vezes
+    if (tries < 3) {
+      await sleep(1000);
       return createLink(groupId, tries + 1);
     }
-    console.error("❌ Erro ao criar link:", e?.response?.body?.description || e.message);
     return null;
   }
 };
@@ -314,20 +439,53 @@ bot.on("callback_query", async (q) => {
         );
 
         const targetCount = 100;
-        const batchSize = 5;
+        const WORKERS = 10;
         const links = [];
         let fails = 0;
+        let started = 0;
+        let lastEdit = 0;
+        floodCount = 0;
+        fatalError = null;
+        const t0 = Date.now();
 
-        while (links.length < targetCount && fails < 20) {
-          const n = Math.min(batchSize, targetCount - links.length);
-          const res = await Promise.all(
-            Array.from({ length: n }, () => createLink(product.group_id))
-          );
-          const okLinks = res.filter(Boolean);
-          links.push(...okLinks);
-          fails = okLinks.length ? 0 : fails + 1;
-          await sleep(100);
+        const worker = async () => {
+          while (started < targetCount && fails < 15 && !fatalError) {
+            started++;
+            const link = await createLink(product.group_id);
+            if (link) {
+              links.push(link);
+              fails = 0;
+
+              // Atualiza o progresso no máximo a cada 2s
+              if (Date.now() - lastEdit > 2000) {
+                lastEdit = Date.now();
+                bot
+                  .editMessageText(
+                    `⚡ Gerando links para <b>${escapeHTML(product.name)}</b>...\n<b>${links.length}/${targetCount}</b>`,
+                    { chat_id: chat, message_id: msgLoading.message_id, parse_mode: "HTML" }
+                  )
+                  .catch(() => {});
+              }
+            } else {
+              started--; // tenta de novo
+              fails++;
+            }
+          }
+        };
+
+        // Repete em rodadas até completar os 100 (ou até um erro sem solução)
+        for (let round = 1; round <= 5 && links.length < targetCount && !fatalError; round++) {
+          started = links.length;
+          fails = 0;
+          await Promise.all(Array.from({ length: WORKERS }, () => worker()));
+          if (links.length < targetCount && !fatalError) {
+            console.warn(`🔁 Rodada ${round}: ${links.length}/${targetCount}. Tentando completar...`);
+            await sleep(3000);
+          }
         }
+
+        const secs = ((Date.now() - t0) / 1000).toFixed(1);
+        console.log(`⏱️ ${links.length} links gerados em ${secs}s (flood control: ${floodCount}x)`);
 
         bot.deleteMessage(chat, msgLoading.message_id).catch(() => {});
 
@@ -341,7 +499,8 @@ bot.on("callback_query", async (q) => {
 
         const incomplete =
           links.length < targetCount
-            ? `\n⚠️ Só foi possível gerar ${links.length} de ${targetCount} links.`
+            ? `\n⚠️ Lote incompleto: ${links.length} de ${targetCount} links.` +
+              (fatalError ? `\nMotivo: ${escapeHTML(fatalError)}` : "\nO Telegram não liberou todos. Gere outro lote para completar.")
             : "";
 
         const linksText = `<pre>${links.join("\n")}</pre>`;
@@ -589,6 +748,9 @@ bot.on("chat_member", (msg) => {
     bot
       .sendMessage(LOG_GROUP_ID, logText, { parse_mode: "HTML" })
       .catch((e) => console.error("❌ Erro ao enviar para o grupo de logs:", e?.response?.body?.description || e.message));
+
+    // Também envia para o Discord (se DISCORD_WEBHOOK_URL estiver configurada)
+    sendDiscordLog({ prodName, userNameDisplay, userId, timestamp, linkUrl });
   });
 });
 
