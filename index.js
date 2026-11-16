@@ -9,12 +9,12 @@ const LOG_GROUP_ID = -1003713776395;
 
 /* ================= INIT ================= */
 
-const bot = new TelegramBot(BOT_TOKEN, { 
+const bot = new TelegramBot(BOT_TOKEN, {
   polling: {
     params: {
       allowed_updates: ["message", "callback_query", "chat_member", "my_chat_member"]
     }
-  } 
+  }
 });
 
 const DB_DIR = (process.env.RAILWAY_VOLUME_MOUNT_PATH || ".").replace(/\/$/, "");
@@ -56,13 +56,29 @@ const isAdmin = (id, cb) => {
   db.get(`SELECT id FROM admins WHERE id=?`, [id], (_, r) => cb(!!r));
 };
 
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const escapeHTML = (str = "") =>
   String(str)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+
+// Cria um link respeitando o retry_after do Telegram (anti-flood)
+const createLink = async (groupId, tries = 0) => {
+  try {
+    const inv = await bot.createChatInviteLink(groupId, { member_limit: 1 });
+    return inv.invite_link;
+  } catch (e) {
+    const retry = e?.response?.body?.parameters?.retry_after;
+    if (retry && tries < 5) {
+      await sleep((retry + 1) * 1000);
+      return createLink(groupId, tries + 1);
+    }
+    console.error("❌ Erro ao criar link:", e?.response?.body?.description || e.message);
+    return null;
+  }
+};
 
 const generateLogImage = async (log) => {
   const chartConfig = {
@@ -119,7 +135,9 @@ const generateLogImage = async (log) => {
 
 /* ================= START / MENU ================= */
 
-bot.onText(/\/start/, (msg) => {
+bot.onText(/^\/start/, (msg) => {
+  if (msg.chat.type !== "private") return;
+
   const id = msg.from.id;
   state[id] = null;
 
@@ -132,13 +150,17 @@ bot.onText(/\/start/, (msg) => {
       [{ text: "🔗 Gerar 100 Links (Estoque)", callback_data: "admin_gen" }],
       [{ text: "🔍 Consultar Logs", callback_data: "admin_check_log" }],
       [{ text: "🔄 Grupos Sincronizados (Auto)", callback_data: "admin_sync_groups" }],
-      [{ text: "✏️ Editar Nome de Produto", callback_data: "admin_edit_prod" }, { text: "🗑️ Remover Produto", callback_data: "admin_rem_prod" }]
+      [
+        { text: "✏️ Editar Nome de Produto", callback_data: "admin_edit_prod" },
+        { text: "🗑️ Remover Produto", callback_data: "admin_rem_prod" }
+      ]
     ];
 
     if (id === MASTER_ADMIN) {
-      buttons.push(
-        [{ text: "➕ Add Admin", callback_data: "admin_add" }, { text: "➖ Remover Admin", callback_data: "admin_remove" }]
-      );
+      buttons.push([
+        { text: "➕ Add Admin", callback_data: "admin_add" },
+        { text: "➖ Remover Admin", callback_data: "admin_remove" }
+      ]);
     }
 
     bot.sendMessage(msg.chat.id, "🛠 <b>Painel Estoquista — WW SENSI</b>\n\nO que deseja fazer?", {
@@ -154,44 +176,60 @@ bot.on("callback_query", async (q) => {
   const id = q.from.id;
   const chat = q.message.chat.id;
 
+  // Tira o "relógio" do botão
+  bot.answerCallbackQuery(q.id).catch(() => {});
+
   isAdmin(id, async (ok) => {
     if (!ok) return;
 
     // CONSULTAR LOG POR LINK
     if (q.data === "admin_check_log") {
       state[id] = { step: "check_log_link" };
-      return bot.sendMessage(chat, "🔍 <b>Consultar Log de Acesso</b>\n\nEnvie o <b>Link da log</b> (link de convite) que deseja rastrear:", {
-        parse_mode: "HTML"
-      });
+      return bot.sendMessage(
+        chat,
+        "🔍 <b>Consultar Log de Acesso</b>\n\nEnvie o <b>Link da log</b> (link de convite) que deseja rastrear:",
+        { parse_mode: "HTML" }
+      );
     }
 
-    // CONSULTAR GRUPOS ONDE O BOT É ADMIN (AUTO-CADASTRADOS)
+    // LISTAR GRUPOS AUTO-CADASTRADOS
     if (q.data === "admin_sync_groups") {
       db.all(`SELECT * FROM products`, [], (err, rows) => {
         if (!rows || rows.length === 0) {
-          return bot.sendMessage(chat, 
+          return bot.sendMessage(
+            chat,
             "🔄 <b>Nenhum grupo detectado ainda.</b>\n\n" +
-            "💡 Basta **adicionar o bot como Administrador** no seu grupo (e mandar uma mensagem lá) para que ele seja reconhecido e cadastrado automaticamente aqui!", 
+              "💡 Basta <b>adicionar o bot como Administrador</b> no seu grupo (e mandar uma mensagem lá) para que ele seja reconhecido e cadastrado automaticamente aqui!",
             { parse_mode: "HTML" }
           );
         }
-        
-        let list = rows.map(r => `• <b>${r.name}</b> (ID: <code>${r.group_id}</code>)`).join("\n");
-        return bot.sendMessage(chat, 
+
+        const list = rows
+          .map((r) => `• <b>${escapeHTML(r.name)}</b> (ID: <code>${r.group_id}</code>)`)
+          .join("\n");
+        return bot.sendMessage(
+          chat,
           `🔄 <b>Produtos/Grupos Detectados Automaticamente (${rows.length}):</b>\n\n${list}\n\n` +
-          `<i>Para adicionar novos, basta promover o bot a Administrador no grupo desejado.</i>`, 
+            `<i>Para adicionar novos, basta promover o bot a Administrador no grupo desejado.</i>`,
           { parse_mode: "HTML" }
         );
       });
       return;
     }
 
-    // EDITAR APENAS NOME DO PRODUTO
+    // EDITAR NOME DO PRODUTO
     if (q.data === "admin_edit_prod") {
       db.all(`SELECT * FROM products`, [], (err, products) => {
-        if (!products || products.length === 0) return bot.sendMessage(chat, "❌ Nenhum produto cadastrado para editar.");
-        const keyboard = products.map(p => [{ text: `✏️ Editar: ${p.name}`, callback_data: `editprod_${p.id}` }]);
-        return bot.sendMessage(chat, "Escolha qual produto deseja **renomear**:", { parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
+        if (!products || products.length === 0) {
+          return bot.sendMessage(chat, "❌ Nenhum produto cadastrado para editar.");
+        }
+        const keyboard = products.map((p) => [
+          { text: `✏️ Editar: ${p.name}`, callback_data: `editprod_${p.id}` }
+        ]);
+        return bot.sendMessage(chat, "Escolha qual produto deseja <b>renomear</b>:", {
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: keyboard }
+        });
       });
       return;
     }
@@ -201,7 +239,11 @@ bot.on("callback_query", async (q) => {
       db.get(`SELECT * FROM products WHERE id=?`, [prodId], (err, product) => {
         if (!product) return bot.sendMessage(chat, "❌ Produto não encontrado.");
         state[id] = { step: "edit_prod_name_only", prodId: product.id };
-        return bot.sendMessage(chat, `Produto selecionado: <b>${product.name}</b>\n\nDigite o **novo NOME** exibido para este produto:`, { parse_mode: "HTML" });
+        return bot.sendMessage(
+          chat,
+          `Produto selecionado: <b>${escapeHTML(product.name)}</b>\n\nDigite o <b>novo NOME</b> exibido para este produto:`,
+          { parse_mode: "HTML" }
+        );
       });
       return;
     }
@@ -210,79 +252,114 @@ bot.on("callback_query", async (q) => {
     if (q.data === "admin_rem_prod") {
       state[id] = null;
       db.all(`SELECT * FROM products`, [], (err, products) => {
-        if (!products || products.length === 0) return bot.sendMessage(chat, "❌ Nenhum produto cadastrado.");
-        const keyboard = products.map(p => [{ text: `❌ Deletar: ${p.name}`, callback_data: `delprod_${p.id}` }]);
-        return bot.sendMessage(chat, "Escolha qual produto remover da lista:", { parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } });
+        if (!products || products.length === 0) {
+          return bot.sendMessage(chat, "❌ Nenhum produto cadastrado.");
+        }
+        const keyboard = products.map((p) => [
+          { text: `❌ Deletar: ${p.name}`, callback_data: `delprod_${p.id}` }
+        ]);
+        return bot.sendMessage(chat, "Escolha qual produto remover da lista:", {
+          parse_mode: "HTML",
+          reply_markup: { inline_keyboard: keyboard }
+        });
       });
       return;
     }
 
     if (q.data.startsWith("delprod_")) {
       const prodId = q.data.replace("delprod_", "");
-      db.run(`DELETE FROM products WHERE id=?`, [prodId]);
-      return bot.sendMessage(chat, `✅ Produto removido com sucesso!`);
+      db.run(`DELETE FROM products WHERE id=?`, [prodId], (err) => {
+        if (err) {
+          console.error("❌ Erro ao remover produto:", err.message);
+          return bot.sendMessage(chat, "❌ Erro ao remover o produto.");
+        }
+        bot.sendMessage(
+          chat,
+          `✅ Produto removido com sucesso!\n<i>Obs: se o grupo receber uma nova mensagem, ele será cadastrado de novo automaticamente.</i>`,
+          { parse_mode: "HTML" }
+        );
+      });
+      return;
     }
 
-    // GERAR ESTOQUE (100 LINKS OTIMIZADOS)
+    // GERAR ESTOQUE (100 LINKS)
     if (q.data === "admin_gen") {
       db.all(`SELECT * FROM products`, [], async (err, products) => {
         if (!products || products.length === 0) {
-          return bot.sendMessage(chat, "❌ Nenhum grupo cadastrado como produto. Adicione o bot como Administrador num grupo para ele aparecer aqui automaticamente!");
+          return bot.sendMessage(
+            chat,
+            "❌ Nenhum grupo cadastrado como produto. Adicione o bot como Administrador num grupo para ele aparecer aqui automaticamente!"
+          );
         }
-        const keyboard = products.map(p => [{ text: p.name, callback_data: `gen_${p.id}` }]);
-        return bot.sendMessage(chat, "Escolha para qual produto deseja gerar o lote de <b>100 links de estoque</b>:", {
-          parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard }
-        });
+        const keyboard = products.map((p) => [{ text: p.name, callback_data: `gen_${p.id}` }]);
+        return bot.sendMessage(
+          chat,
+          "Escolha para qual produto deseja gerar o lote de <b>100 links de estoque</b>:",
+          { parse_mode: "HTML", reply_markup: { inline_keyboard: keyboard } }
+        );
       });
       return;
     }
 
     if (q.data.startsWith("gen_")) {
       const prodId = q.data.replace("gen_", "");
-      
+
       db.get(`SELECT * FROM products WHERE id=?`, [prodId], async (err, product) => {
         if (!product) return bot.sendMessage(chat, "❌ Produto não encontrado.");
 
-        const msgLoading = await bot.sendMessage(chat, `⚡ A gerar 100 links para <b>${product.name}</b> de forma acelerada...`, { parse_mode: "HTML" });
+        const msgLoading = await bot.sendMessage(
+          chat,
+          `⚡ Gerando 100 links para <b>${escapeHTML(product.name)}</b>...`,
+          { parse_mode: "HTML" }
+        );
 
-        let links = [];
         const targetCount = 100;
-        let batchSize = 10;
+        const batchSize = 5;
+        const links = [];
+        let fails = 0;
 
-        while (links.length < targetCount) {
-          let promises = [];
-          let currentBatch = Math.min(batchSize, targetCount - links.length);
-
-          for (let i = 0; i < currentBatch; i++) {
-            promises.push(
-              bot.createChatInviteLink(product.group_id, { member_limit: 1 })
-                .then(invite => invite?.invite_link)
-                .catch(() => null)
-            );
-          }
-
-          let results = await Promise.all(promises);
-          for (let link of results) {
-            if (link) links.push(link);
-          }
-
-          await sleep(150);
+        while (links.length < targetCount && fails < 20) {
+          const n = Math.min(batchSize, targetCount - links.length);
+          const res = await Promise.all(
+            Array.from({ length: n }, () => createLink(product.group_id))
+          );
+          const okLinks = res.filter(Boolean);
+          links.push(...okLinks);
+          fails = okLinks.length ? 0 : fails + 1;
+          await sleep(100);
         }
 
         bot.deleteMessage(chat, msgLoading.message_id).catch(() => {});
 
-        let linksText = `<pre>${links.join("\n")}</pre>`;
+        if (links.length === 0) {
+          return bot.sendMessage(
+            chat,
+            "❌ Não consegui gerar nenhum link.\n\nVerifique se o bot é <b>administrador</b> do grupo com a permissão <b>Convidar usuários via link</b>.",
+            { parse_mode: "HTML" }
+          );
+        }
+
+        const incomplete =
+          links.length < targetCount
+            ? `\n⚠️ Só foi possível gerar ${links.length} de ${targetCount} links.`
+            : "";
+
+        const linksText = `<pre>${links.join("\n")}</pre>`;
 
         if (linksText.length > 4000) {
-          bot.sendMessage(chat, `✅ <b>Lote de 100 Links Concluído (${product.name}):</b> (Parte 1)`, { parse_mode: "HTML" });
+          await bot.sendMessage(
+            chat,
+            `✅ <b>Lote de ${links.length} Links Concluído (${escapeHTML(product.name)}):</b>${incomplete}`,
+            { parse_mode: "HTML" }
+          );
           for (let i = 0; i < links.length; i += 50) {
             const chunk = links.slice(i, i + 50).join("\n");
-            bot.sendMessage(chat, `<pre>${chunk}</pre>`, { parse_mode: "HTML" });
+            await bot.sendMessage(chat, `<pre>${chunk}</pre>`, { parse_mode: "HTML" });
           }
         } else {
-          bot.sendMessage(
+          await bot.sendMessage(
             chat,
-            `✅ <b>Lote de 100 Links Gerado com Sucesso! (${product.name})</b>\n<i>Clique no bloco abaixo para copiar todos de uma vez:</i>\n\n${linksText}`,
+            `✅ <b>Lote de ${links.length} Links Gerado com Sucesso! (${escapeHTML(product.name)})</b>${incomplete}\n<i>Clique no bloco abaixo para copiar todos de uma vez:</i>\n\n${linksText}`,
             { parse_mode: "HTML" }
           );
         }
@@ -304,26 +381,37 @@ bot.on("callback_query", async (q) => {
 
 /* ================= AUTO-REGISTRO EM TEMPO REAL ================= */
 
-// 1. Quando o bot é adicionado como admin no grupo
+// 1. Quando o bot é adicionado/removido de um grupo
 bot.on("my_chat_member", (msg) => {
   const chat = msg.chat;
   const newStatus = msg.new_chat_member.status;
+
+  console.log(`ℹ️ my_chat_member: ${chat.title || chat.id} -> ${newStatus}`);
 
   if (chat.type === "supergroup" || chat.type === "group") {
     if (newStatus === "administrator" || newStatus === "member") {
       const prodId = "GRP_" + Math.abs(chat.id);
       const prodName = chat.title || "Grupo " + chat.id;
 
-      db.run(`INSERT OR IGNORE INTO products (id, name, group_id) VALUES (?, ?, ?)`, [prodId, prodName, chat.id]);
+      db.run(
+        `INSERT OR IGNORE INTO products (id, name, group_id) VALUES (?, ?, ?)`,
+        [prodId, prodName, chat.id],
+        (err) => {
+          if (err) console.error("❌ Erro ao cadastrar grupo:", err.message);
+        }
+      );
     } else if (newStatus === "left" || newStatus === "kicked") {
-      db.run(`DELETE FROM products WHERE group_id=?`, [chat.id]);
+      db.run(`DELETE FROM products WHERE group_id=?`, [chat.id], (err) => {
+        if (err) console.error("❌ Erro ao remover grupo:", err.message);
+      });
     }
   }
 });
 
-// 2. Quando o bot detecta qualquer mensagem enviada no grupo
+// 2. Mensagens (grupos = auto-cadastro; privado = fluxo do admin)
 bot.on("message", async (msg) => {
   const chatType = msg.chat.type;
+
   if (chatType === "supergroup" || chatType === "group") {
     const groupId = msg.chat.id;
     const groupName = msg.chat.title || "Grupo " + groupId;
@@ -331,7 +419,13 @@ bot.on("message", async (msg) => {
 
     db.get(`SELECT id FROM products WHERE group_id=?`, [groupId], (err, row) => {
       if (!row) {
-        db.run(`INSERT OR IGNORE INTO products (id, name, group_id) VALUES (?, ?, ?)`, [prodId, groupName, groupId]);
+        db.run(
+          `INSERT OR IGNORE INTO products (id, name, group_id) VALUES (?, ?, ?)`,
+          [prodId, groupName, groupId],
+          (e) => {
+            if (e) console.error("❌ Erro ao cadastrar grupo:", e.message);
+          }
+        );
       }
     });
     return;
@@ -343,6 +437,7 @@ bot.on("message", async (msg) => {
   const text = msg.text?.trim();
   if (!text || !state[id]) return;
 
+  // CONSULTA DE LOG
   if (state[id].step === "check_log_link") {
     const cleanLink = (text.match(/https?:\/\/t\.me\/[^\s]+/i)?.[0] || text).trim();
     state[id] = null;
@@ -351,6 +446,8 @@ bot.on("message", async (msg) => {
       `SELECT * FROM access_logs WHERE invite_link = ? ORDER BY id DESC LIMIT 1`,
       [cleanLink],
       async (err, log) => {
+        if (err) console.error("❌ Erro ao consultar log:", err.message);
+
         if (err || !log) {
           return bot.sendMessage(
             msg.chat.id,
@@ -385,75 +482,124 @@ bot.on("message", async (msg) => {
     return;
   }
 
+  // RENOMEAR PRODUTO
   if (state[id].step === "edit_prod_name_only") {
-    db.run(`UPDATE products SET name=? WHERE id=?`, [text, state[id].prodId], (err) => {
+    const prodId = state[id].prodId;
+    db.run(`UPDATE products SET name=? WHERE id=?`, [text, prodId], (err) => {
       if (err) {
+        console.error("❌ Erro ao renomear:", err.message);
         bot.sendMessage(msg.chat.id, "❌ Erro ao renomear produto no banco de dados.");
       } else {
-        bot.sendMessage(msg.chat.id, `✅ Nome do produto alterado para <b>${text}</b> com sucesso!`, { parse_mode: "HTML" });
+        bot.sendMessage(
+          msg.chat.id,
+          `✅ Nome do produto alterado para <b>${escapeHTML(text)}</b> com sucesso!`,
+          { parse_mode: "HTML" }
+        );
       }
       state[id] = null;
     });
     return;
   }
 
+  // ADD ADMIN
   if (state[id].step === "add_admin" && id === MASTER_ADMIN) {
-    db.run(`INSERT OR IGNORE INTO admins VALUES (?)`, [Number(text)]);
+    const newId = Number(text);
     state[id] = null;
-    return bot.sendMessage(msg.chat.id, "✅ Admin adicionado com sucesso.");
+    if (!Number.isInteger(newId)) {
+      return bot.sendMessage(msg.chat.id, "❌ ID inválido. Envie apenas números.");
+    }
+    db.run(`INSERT OR IGNORE INTO admins VALUES (?)`, [newId], (err) => {
+      if (err) {
+        console.error("❌ Erro ao adicionar admin:", err.message);
+        return bot.sendMessage(msg.chat.id, "❌ Erro ao adicionar admin.");
+      }
+      bot.sendMessage(msg.chat.id, "✅ Admin adicionado com sucesso.");
+    });
+    return;
   }
 
+  // REMOVER ADMIN
   if (state[id].step === "remove_admin" && id === MASTER_ADMIN) {
-    db.run(`DELETE FROM admins WHERE id=?`, [Number(text)]);
+    const remId = Number(text);
     state[id] = null;
-    return bot.sendMessage(msg.chat.id, "✅ Admin removido com sucesso.");
+    if (!Number.isInteger(remId)) {
+      return bot.sendMessage(msg.chat.id, "❌ ID inválido. Envie apenas números.");
+    }
+    db.run(`DELETE FROM admins WHERE id=?`, [remId], (err) => {
+      if (err) {
+        console.error("❌ Erro ao remover admin:", err.message);
+        return bot.sendMessage(msg.chat.id, "❌ Erro ao remover admin.");
+      }
+      bot.sendMessage(msg.chat.id, "✅ Admin removido com sucesso.");
+    });
+    return;
   }
 });
 
 /* ================= LOGGER DE ENTRADAS ================= */
 
-bot.on('chat_member', (msg) => {
+bot.on("chat_member", (msg) => {
+  // Debug: mostra tudo que chega. Depois que estiver estável, pode remover.
+  console.log("📨 chat_member recebido:", JSON.stringify(msg));
+
   const chat = msg.chat;
   const newMember = msg.new_chat_member;
   const oldMember = msg.old_chat_member;
   const inviteLink = msg.invite_link;
 
-  if (
-    (oldMember.status === 'left' || oldMember.status === 'kicked' || oldMember.status === 'restricted') &&
-    newMember.status === 'member' &&
-    inviteLink
-  ) {
-     const fullName = [newMember.user.first_name, newMember.user.last_name].filter(Boolean).join(" ") || "Usuário";
-     const usernameOnly = newMember.user.username ? `@${newMember.user.username}` : "Sem @username";
-     const userNameDisplay = fullName + (newMember.user.username ? ` (@${newMember.user.username})` : '');
-     const userId = newMember.user.id;
-     const linkUrl = inviteLink.invite_link;
-     const timestamp = nowBR();
+  const entrou =
+    ["left", "kicked", "restricted"].includes(oldMember.status) &&
+    newMember.status === "member";
 
-     db.get(`SELECT name FROM products WHERE group_id=?`, [chat.id], (err, product) => {
-        const prodName = product ? product.name : (chat.title || `Grupo ${chat.id}`);
+  if (!entrou) return;
 
-        db.run(
-          `INSERT INTO access_logs (invite_link, user_id, user_name, username, product_name, group_id, used_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [linkUrl, userId, fullName, usernameOnly, prodName, chat.id, timestamp]
-        );
+  if (!inviteLink) {
+    console.log(`ℹ️ Entrada sem invite_link em ${chat.title || chat.id} (user ${newMember.user.id}) - ignorada.`);
+    return;
+  }
 
-        const logText = `📥 <b>NOVO ACESSO RESGATADO (ESTOQUE)</b>\n\n` +
-                        `📦 <b>Produto/Grupo:</b> ${escapeHTML(prodName)}\n` +
-                        `👤 <b>Membro:</b> ${escapeHTML(userNameDisplay)}\n` +
-                        `🆔 <b>ID:</b> <code>${userId}</code>\n` +
-                        `🔗 <b>Link Utilizado:</b>\n${escapeHTML(linkUrl)}\n` +
-                        `🕒 <b>Hora:</b> ${timestamp}`;
+  const fullName =
+    [newMember.user.first_name, newMember.user.last_name].filter(Boolean).join(" ") || "Usuário";
+  const usernameOnly = newMember.user.username ? `@${newMember.user.username}` : "Sem @username";
+  const userNameDisplay = fullName + (newMember.user.username ? ` (@${newMember.user.username})` : "");
+  const userId = newMember.user.id;
+  const linkUrl = inviteLink.invite_link;
+  const timestamp = nowBR();
 
-        bot.sendMessage(LOG_GROUP_ID, logText, { parse_mode: 'HTML' }).catch(() => {});
-     });
+  db.get(`SELECT name FROM products WHERE group_id=?`, [chat.id], (err, product) => {
+    const prodName = product ? product.name : chat.title || `Grupo ${chat.id}`;
+
+    db.run(
+      `INSERT INTO access_logs (invite_link, user_id, user_name, username, product_name, group_id, used_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [linkUrl, userId, fullName, usernameOnly, prodName, chat.id, timestamp],
+      (e) => {
+        if (e) console.error("❌ Erro ao gravar access_log:", e.message);
+        else console.log(`✅ Log gravado: ${userId} -> ${prodName}`);
+      }
+    );
+
+    const logText =
+      `📥 <b>NOVO ACESSO RESGATADO (ESTOQUE)</b>\n\n` +
+      `📦 <b>Produto/Grupo:</b> ${escapeHTML(prodName)}\n` +
+      `👤 <b>Membro:</b> ${escapeHTML(userNameDisplay)}\n` +
+      `🆔 <b>ID:</b> <code>${userId}</code>\n` +
+      `🔗 <b>Link Utilizado:</b>\n${escapeHTML(linkUrl)}\n` +
+      `🕒 <b>Hora:</b> ${timestamp}`;
+
+    bot
+      .sendMessage(LOG_GROUP_ID, logText, { parse_mode: "HTML" })
+      .catch((e) => console.error("❌ Erro ao enviar para o grupo de logs:", e?.response?.body?.description || e.message));
+  });
+});
+
+/* ===== ERROS DE POLLING ===== */
+bot.on("polling_error", (err) => {
+  console.error("Polling error:", err.code, err.message);
+  if (String(err.message).includes("409")) {
+    console.error("⚠️ Conflito 409: existe OUTRA instância do bot rodando com o mesmo token. Desligue a duplicada.");
   }
 });
 
-/* ===== FIX POLLING ERROR ===== */
-bot.on("polling_error", (err) => {
-  if (err.code === "ETELEGRAM") return;
-  console.error("Polling error:", err.code);
-});
+process.on("unhandledRejection", (e) => console.error("unhandledRejection:", e));
 
 console.log("🤖 BOT ESTOQUISTA AUTO-REGISTRÁVEL COMPLETO ONLINE");
