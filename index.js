@@ -354,7 +354,7 @@ bot.on("message", async (msg) => {
         if (err || !log) {
           return bot.sendMessage(
             msg.chat.id,
-            "⚠️ <b>Nenhum registro encontrado para este link.</b>\n\nVerifique se o link está correto ou se ele já foi utilizado após a ativação do sistema de logs.",
+            "⚠️ <b>Nenhum registro encontrado para este link.</b>\n\nCertifique-se de que o link já foi utilizado por um membro para entrar no grupo.",
             { parse_mode: "HTML" }
           );
         }
@@ -445,7 +445,7 @@ bot.on('chat_member', (msg) => {
                         `🔗 <b>Link Utilizado:</b>\n${escapeHTML(linkUrl)}\n` +
                         `🕒 <b>Hora:</b> ${timestamp}`;
 
-        bot.sendMessage(LOG_GROUP_ID, logText, { parse_mode: 'HTML' });
+        bot.sendMessage(LOG_GROUP_ID, logText, { parse_mode: 'HTML' }).catch(() => {});
      });
   }
 });
