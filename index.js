@@ -69,7 +69,7 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
 // false = link no topo da mesma mensagem, fora do container (igual ao seu modelo)
 // true  = link em uma mensagem separada, só texto (garante busca pelo link no Discord)
-const LINK_EM_MENSAGEM_SEPARADA = false;
+const LINK_EM_MENSAGEM_SEPARADA = true;
 
 // Evita que nomes com *, _, ~, ` etc. quebrem a formatação do Discord
 const escapeDiscord = (str = "") => String(str).replace(/([\\*_~`|>#\[\]()])/g, "\\$1");
